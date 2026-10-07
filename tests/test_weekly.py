@@ -90,5 +90,22 @@ class WeeklyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Missing Close'):
             weekly.simulate(pred, data)
 
+    def test_weekly_extrema_and_range_ignore_future_targets(self):
+        p, m, f, l, _ = self.prepared
+        date = self.pred.Date.max()
+        row = p.loc[(p.Date == date) & (p.Symbol == 'BTCUSDT')].iloc[0]
+        raw = self.frames['BTCUSDT']
+        days = pd.date_range(date + pd.Timedelta(days=2), periods=7)
+        if days.max() <= raw.index.max():
+            self.assertAlmostEqual(row.label_high_7d, np.log(raw.loc[days, 'High'].max() / row.Close))
+        symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
+        a = weekly.price_ranges(p, self.priors, f, l, date, symbols, self.settings, calibration_weeks=4)
+        changed = p.copy()
+        changed.loc[changed.Date >= date, ['label_high_7d', 'label_low_7d']] = 100.
+        b = weekly.price_ranges(changed, self.priors, f, l, date, symbols, self.settings, calibration_weeks=4)
+        pd.testing.assert_frame_equal(a, b)
+        self.assertTrue((a.week_low_price > 0).all())
+        self.assertTrue((a.week_high_price >= a.week_low_price).all())
+
 if __name__ == '__main__':
     unittest.main()

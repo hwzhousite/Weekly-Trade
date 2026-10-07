@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'src'))
 import binance_data
 import weekly
+import plan_data
 
 
 def main():
@@ -19,13 +20,13 @@ def main():
     p.add_argument('--as-of', help='Saturday UTC bar date; required for historical plans')
     p.add_argument('--fee-bps', type=float, default=10.)
     p.add_argument('--slippage-bps', type=float, default=5.)
+    p.add_argument('--offline', action='store_true', help='Explicitly skip Binance refresh/quotes for cached research plans')
     args = p.parse_args()
     if args.capital <= 0 or min(args.fee_bps, args.slippage_bps) < 0:
         p.error('capital must be positive and costs nonnegative')
     if args.command == 'download':
         binance_data.download_universe(cache_dir=args.data_dir)
         return
-    frames = binance_data.load_universe(cache_dir=args.data_dir, min_bars=90)
     settings = weekly.Settings(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
     now = None
     if args.as_of:
@@ -35,6 +36,10 @@ def main():
         now = (as_of + pd.Timedelta(days=1)).tz_localize('UTC')
         if now > pd.Timestamp.now(tz='UTC'):
             p.error('--as-of bar has not closed')
+    if args.command == 'plan' and not args.offline:
+        frames = plan_data.refresh_plan_frames(args.data_dir)
+    else:
+        frames = binance_data.load_universe(cache_dir=args.data_dir, min_bars=90)
     panel, market, features, leaders, clean = weekly.prepare(frames, settings, now=now)
     predictions, priors = weekly.score(panel, market, features, leaders, settings)
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -59,8 +64,13 @@ def main():
         if not args.as_of and date != expected:
             raise ValueError('Latest weekly signal is stale; refresh cache before generating plan')
         plan = weekly.allocation(predictions.loc[predictions.Date == date], settings)
+        ranges = weekly.price_ranges(panel, priors, features, leaders, date, plan.Symbol.tolist(), settings)
         cols = ['Date', 'entry_date', 'exit_date', 'Symbol', 'rank', 'market_prob', 'stance', 'pred_net_7d', 'target_weight']
         plan = plan[cols].copy()
+        plan = plan.merge(ranges, on='Symbol', validate='one_to_one')
+        if not args.offline and not args.as_of:
+            plan = plan.merge(plan_data.current_quotes(plan.Symbol.tolist()), on='Symbol', validate='one_to_one')
+        plan['data_mode'] = 'offline_cache' if args.offline else 'binance_refreshed'
         plan['target_notional'] = plan.target_weight * args.capital
         # Actual quantity must use live execution quotes, never the signal close.
         path = args.output_dir / f'plan_{date:%Y-%m-%d}.csv'

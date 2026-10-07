@@ -44,7 +44,7 @@ python main.py backtest --data-dir ../Daily-Trade/data/binance
 python main.py plan --data-dir ../Daily-Trade/data/binance --capital 10000
 ```
 
-或在可访问 Binance API 的环境下载：
+`plan` 每次默认联网刷新当前 Binance USDT 永续合约币种池与历史行情，再生成计划。无需先执行 download；API 失败不会自动退回旧缓存。可在能够访问 Binance API 的环境运行：
 
 ```bash
 python main.py download
@@ -55,7 +55,7 @@ python main.py plan --capital 10000
 历史周计划（参数必须是 UTC 周六日期）：
 
 ```bash
-python main.py plan --data-dir ../Daily-Trade/data/binance --as-of 2026-10-03
+python main.py plan --offline --data-dir ../Daily-Trade/data/binance --as-of 2026-10-03
 ```
 
 费用实验：
@@ -74,7 +74,7 @@ python main.py backtest --fee-bps 10 --slippage-bps 10
 | `backtest_conditional_full.csv` | 使用条件选币、满仓上限，分离选币贡献 |
 | `backtest_conditional.csv` | 条件选币 + 市场概率控制仓位 |
 | `metrics.json` | 市场 Brier/AUC 与策略收益、回撤、日净值 Sharpe、成本 |
-| `plan_YYYY-MM-DD.csv` | 前三榜单、市场概率、状态、预测净收益、目标权重和金额 |
+| `plan_YYYY-MM-DD.csv` | 前三榜单、市场概率、状态、预测净收益、目标权重和金额，以及整周价格区间、当前价格与报价时间 |
 
 三组策略均使用收益成本门槛；“满仓上限”不等于必须满仓。计划即使目标权重为零也保留前三榜单。执行数量必须使用实时价格，并与真实持仓对账；CSV 是目标计划，不是买卖差额订单。模型每次运行按历史重训，尚不持久化生产模型；预测 CSV 保留每次研究的审计信息，请保存输出快照。
 
@@ -89,3 +89,36 @@ python -m unittest discover -s tests -v
 当前验证是合成数据和程序正确性验证，**没有宣称策略具有实盘或历史盈利能力**。需在真实缓存上运行三组对照，确认市场 Brier 优于历史上涨基准、条件选币确有额外贡献，再决定是否采用市场门控。
 
 继承的数据下载器按当前成交量选币，仍有幸存者偏差；本项目用历史连续 90 日价格和过去 30 日流动性做资格筛选，但不能恢复已退市或未被下载的币。缺失 held 行情/资金费报错，不虚构零收益。资金费使用日资金费率和日收盘名义金额作为结算代理，未使用每次结算时点价格；下载适配器对无资金费记录日期默认补零，研究前需核对其数据覆盖。滑点采用固定 bps，未模拟冲击、最小下单数量、保证金清算或交易所中断；出现非正权益即停止。期末统一平仓计费。三个市场阈值不做同样本最优参数扫描。
+
+## 每次周计划在线刷新与整周价格区间
+
+```bash
+python main.py plan --capital 10000
+```
+
+运行顺序：Binance exchangeInfo/24h 成交量排名 → 当前 Top 50 USDT 永续合约（强制包含 BTC/ETH/SOL）→ 下载日线/资金费/现货基差数据 → 检查最新已收盘日线 → 两层模型 → Top 3 → 周价格区间 → 三个币的实时 futures ticker → 输出 CSV。公共行情接口不需要 API key。只有本次下载成功且包含最新已收盘 UTC bar 的币进入此次模型，不重新加载目录中的旧币种缓存。BTC/ETH/SOL 任一缺失或新鲜币种不足 5 个时停止。可用币仍需满足 400 日下载历史门槛和模型的成熟周样本要求。
+
+首次/每次刷新可能较慢，继承的适配器会分页下载历史并处理限流。网络或地区限制（例如 HTTP 451）会导致计划失败，应在允许访问 Binance API 的运行环境执行。
+
+| 新字段 | 含义 |
+|---|---|
+| `current_price` / `quote_time_utc` | 当前永续合约价格及交易所报价时间，仅实时在线计划提供 |
+| `range_reference_close` | 周六信号 bar 收盘价，区间固定基准 |
+| `week_low_price` | 下一 UTC 周一至周日最低价的 q05 预测，经可用历史 OOF 误差向外修正 |
+| `week_high_price` | 同一整周最高价的 q95 预测，经可用历史 OOF 误差向外修正 |
+| `range_nominal_coverage` | 90% 名义整周覆盖目标，非保证 |
+| `range_calibration` | `pooled_oof_empirical` 或历史不足时 `uncalibrated` |
+| `range_calibration_weeks` / `range_calibration_rows` | 校准可用的历史周数与币种行数 |
+| `data_mode` | `binance_refreshed` 或显式离线的 `offline_cache` |
+
+价格区间是未来整周最高/最低路径边界，不是下周末收盘价区间，也不是自动止损/止盈订单。两个额外 LightGBM 分位数头使用和选币相同的历史因子、leader 状态和 OOF 市场概率。标签为 `log(max(High[t+2:t+9]) / Close[t])`、`log(min(Low[t+2:t+9]) / Close[t])`；七天都完整才有效。输出通过指数转换还原绝对 USDT 价格，实时 ticker 不改动固定的预测基准。
+
+校准使用最多 12 个已成熟历史周的滚动样本外预测，至少 4 个可用周才启用；误差跨币种汇总，只向外扩展，避免凭有限样本收窄区间。同周币种与相邻周相关，因此这是经验校准，不宣称严格的 90% 实际覆盖率。校准样本不是独立测试集。当前测试覆盖程序正确性，真实数据上的区间覆盖仍需评估。
+
+仅研究时显式使用缓存：
+
+```bash
+python main.py plan --offline --data-dir ../Daily-Trade/data/binance --capital 10000
+```
+
+离线模式不提供实时 ticker；历史计划建议同时指定 `--offline --as-of`，避免用当前币种池解释历史结果。所有计划均使用既有周六信号与周一至下周一持有约定；周中重跑仍报告本交易周，不生成未来尚未具备信号的数据。

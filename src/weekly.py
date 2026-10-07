@@ -67,6 +67,11 @@ def prepare(frames, settings=Settings(), now=None):
         # daily close as settlement-price proxy; intraday funding marks unavailable.
         funding = sum(d['funding_daily'].shift(-k) * d['Close'].shift(-k) / entry for k in range(2, 9))
         e['label_net'] = e['label_return'] - funding
+        # Whole Monday-Sunday trading range, relative to the observable signal close.
+        highs = pd.concat([d.High.shift(-k) for k in range(2, 9)], axis=1)
+        lows = pd.concat([d.Low.shift(-k) for k in range(2, 9)], axis=1)
+        e['label_high_7d'] = np.log(highs.max(axis=1).where(highs.count(axis=1) == 7) / d.Close)
+        e['label_low_7d'] = np.log(lows.min(axis=1).where(lows.count(axis=1) == 7) / d.Close)
         e['label_end'] = e.index + pd.Timedelta(days=9)
         e['Symbol'] = symbol
         e['Date'] = e.index
@@ -245,3 +250,61 @@ def market_metrics(priors):
     return {'weeks': len(d), 'brier': brier_score_loss(d.market_up, d.market_prob),
             'base_brier': brier_score_loss(d.market_up, d.base_rate),
             'auc': roc_auc_score(d.market_up, d.market_prob) if d.market_up.nunique() == 2 else None}
+
+
+def price_ranges(panel, priors, features, leaders, date, symbols, settings=Settings(), calibration_weeks=12):
+    """q05 of weekly minimum / q95 of weekly maximum, signal-close-relative.
+
+    Historical calibration uses rolling OOF predictions and fully mature labels.
+    Pooled serially dependent residuals give empirical calibration, not a formal
+    independent-sample coverage guarantee. Quotes never change the band anchor.
+    """
+    date = pd.Timestamp(date)
+    data = panel.merge(priors[['Date', 'market_prob']], on='Date', validate='many_to_one')
+    cols = list(dict.fromkeys(features + leaders + ['market_prob']))
+    targets = [('low', 'label_low_7d', .05), ('high', 'label_high_7d', .95)]
+    def predict_at(d, current):
+        train = mature(data, d, settings)
+        train = train.loc[train.eligible].dropna(subset=['label_low_7d', 'label_high_7d'])
+        if train.Date.nunique() < settings.selection_min_weeks:
+            return None
+        result = current[['Date', 'Symbol', 'Close', 'label_low_7d', 'label_high_7d']].copy()
+        for name, target, alpha in targets:
+            model = LGBMRegressor(objective='quantile', alpha=alpha,
+                n_estimators=100, learning_rate=.03, num_leaves=7, max_depth=3,
+                min_child_samples=30, reg_lambda=5., random_state=42, n_jobs=1, verbosity=-1)
+            model.fit(train[cols], train[target])
+            result[name] = model.predict(current[cols])
+        return result
+    historical = mature(data, date, settings)
+    dates = sorted(historical.Date.unique())[-calibration_weeks:]
+    errors = []
+    for d in dates:
+        current = historical.loc[(historical.Date == d) & historical.eligible].dropna(subset=['label_low_7d', 'label_high_7d'])
+        if current.empty:
+            continue
+        out = predict_at(pd.Timestamp(d), current)
+        if out is not None:
+            errors.append(out)
+    current = data.loc[(data.Date == date) & data.Symbol.isin(symbols)]
+    out = predict_at(date, current)
+    if out is None or len(out) != len(symbols):
+        raise ValueError('Insufficient mature data for weekly price-range heads')
+    calibration = pd.concat(errors, ignore_index=True) if errors else pd.DataFrame()
+    n_weeks = calibration.Date.nunique() if not calibration.empty else 0
+    calibrated = n_weeks >= 4
+    low_adjust = high_adjust = 0.
+    if calibrated:
+        low_adjust = min(0., float((calibration.label_low_7d - calibration.low).quantile(.05)))
+        high_adjust = max(0., float((calibration.label_high_7d - calibration.high).quantile(.95)))
+    lo, hi = out.low + low_adjust, out.high + high_adjust
+    # Sort crossing predictions; positive prices follow from the log target.
+    out['week_low_price'] = out.Close * np.exp(np.minimum(lo, hi))
+    out['week_high_price'] = out.Close * np.exp(np.maximum(lo, hi))
+    out['range_reference_close'] = out.Close
+    out['range_nominal_coverage'] = .90
+    out['range_calibration'] = 'pooled_oof_empirical' if calibrated else 'uncalibrated'
+    out['range_calibration_weeks'] = n_weeks
+    out['range_calibration_rows'] = len(calibration)
+    return out[['Symbol', 'range_reference_close', 'week_low_price', 'week_high_price',
+                'range_nominal_coverage', 'range_calibration', 'range_calibration_weeks', 'range_calibration_rows']]
