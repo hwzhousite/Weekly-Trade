@@ -7,8 +7,6 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'src'))
 import binance_data
-import weekly
-import plan_data
 
 
 def main():
@@ -21,12 +19,19 @@ def main():
     p.add_argument('--fee-bps', type=float, default=10.)
     p.add_argument('--slippage-bps', type=float, default=5.)
     p.add_argument('--offline', action='store_true', help='Explicitly skip Binance refresh/quotes for cached research plans')
+    p.add_argument('--start', default=None, help='Download start date YYYY-MM-DD')
+    p.add_argument('--end', default=None, help='Download exclusive end date YYYY-MM-DD')
+    p.add_argument('--symbols', nargs='+', help='Download these symbols instead of the current top-volume universe')
+    p.add_argument('--universe-size', type=int, default=50)
     args = p.parse_args()
     if args.capital <= 0 or min(args.fee_bps, args.slippage_bps) < 0:
         p.error('capital must be positive and costs nonnegative')
     if args.command == 'download':
-        binance_data.download_universe(cache_dir=args.data_dir)
+        from download_data import download
+        download(args.data_dir, args.start, args.end, args.symbols, args.universe_size)
         return
+    import weekly
+    import plan_data
     settings = weekly.Settings(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
     now = None
     if args.as_of:
@@ -80,4 +85,7 @@ def main():
         print('Target plan only: reconcile actual positions and use live quotes to determine order quantities.')
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except binance_data.BinanceError as exc:
+        raise SystemExit(str(exc))

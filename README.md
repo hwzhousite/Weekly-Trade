@@ -122,3 +122,29 @@ python main.py plan --offline --data-dir ../Daily-Trade/data/binance --capital 1
 ```
 
 离线模式不提供实时 ticker；历史计划建议同时指定 `--offline --as-of`，避免用当前币种池解释历史结果。所有计划均使用既有周六信号与周一至下周一持有约定；周中重跑仍报告本交易周，不生成未来尚未具备信号的数据。
+
+## 独立数据下载入口
+
+下载已集成到本仓库，不依赖 Daily-Trade 目录，也不需要模型训练后才能下载：
+
+```bash
+git pull
+pip install -r requirements.txt
+bash download.sh
+# 等价：python main.py download
+python main.py plan --offline --capital 10000
+```
+
+默认获取当前成交量前 50 的 USDT 永续合约，并强制包含 BTC/ETH/SOL；历史不足 400 天的币会跳过。写入 `data/binance/币种.parquet` 和 `download_manifest.json`（成功币种、日期范围、失败/历史不足币种），写入采用临时文件原子替换。
+
+自定义下载：
+
+```bash
+bash download.sh --start 2023-09-21 --universe-size 50
+bash download.sh --symbols BTCUSDT ETHUSDT SOLUSDT ADAUSDT XRPUSDT BNBUSDT --start 2023-09-21
+bash download.sh --data-dir /path/to/cache --start 2023-09-21 --end 2026-10-07
+```
+
+`--end` 是不包含该日期的 UTC 边界，未收盘 bar 不下载。指定币种后仍会补入三个 leader；周频因子需要至少 5 个币种，模型还需要足够的成熟周样本。数据包含永续 OHLCV、成交量微观字段、日资金费和现货基差参考。下载命令不会加载 LightGBM，也不自动生成计划。数据文件保存在本地，GitHub 只保存下载代码。每次在线计划仍执行自动刷新；只有显式 `--offline` 才使用这些缓存。
+
+**HTTP 451** 是 Binance API 的网络/地区访问限制；加入下载脚本不能消除该限制。请在 Binance 允许访问的运行环境下载。程序会给出清晰提示，不悄悄切换行情源或假装下载成功。

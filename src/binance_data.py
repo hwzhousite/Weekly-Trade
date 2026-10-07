@@ -56,6 +56,10 @@ def _request(url, params=None, retries=4, pause=0.15):
                 time.sleep(pause)
                 return json.load(resp)
         except urllib.error.HTTPError as exc:
+            if exc.code == 451:
+                raise BinanceError('Binance API returned HTTP 451: access is restricted for this network/region. '
+                                   'Run downloads in an environment where Binance permits access; '
+                                   'moving the downloader into this repo does not remove the restriction.') from exc
             if exc.code in (418, 429):
                 wait = 30 * attempt
                 print(f"    rate limited ({exc.code}); sleeping {wait}s")
@@ -385,4 +389,3 @@ def collect_short_history(symbols=None, store_path=None, period='1d', verbose=Tr
         print(f"Short-history store: {len(fresh):,} rows, {fresh['symbol'].nunique()} symbols, "
               f"{span} -> {store_path}")
     return fresh
-
