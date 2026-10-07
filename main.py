@@ -23,6 +23,7 @@ def main():
     p.add_argument('--end', default=None, help='Download exclusive end date YYYY-MM-DD')
     p.add_argument('--symbols', nargs='+', help='Download these symbols instead of the current top-volume universe')
     p.add_argument('--universe-size', type=int, default=50)
+    p.add_argument('--bootstrap', action='store_true', help='Reconstruct a missing Monday plan midweek from Sunday information')
     args = p.parse_args()
     if args.capital <= 0 or min(args.fee_bps, args.slippage_bps) < 0:
         p.error('capital must be positive and costs nonnegative')
@@ -35,7 +36,7 @@ def main():
     if args.command in ('plan', 'daily') and not args.as_of:
         from live_workflow import run
         run(args.command, args.data_dir, args.output_dir, args.capital, args.offline,
-            fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
+            fee_bps=args.fee_bps, slippage_bps=args.slippage_bps, bootstrap=args.bootstrap)
         return
     if args.command == 'daily':
         p.error('daily uses this week frozen plan; --as-of is only for historical plan research')

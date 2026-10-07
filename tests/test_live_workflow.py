@@ -29,6 +29,11 @@ class LifecycleTests(TestCase):
             self.assertEqual(monday.market_prob.tolist(),tuesday.market_prob.tolist())
             self.assertFalse(monday.week_low_price.equals(tuesday.week_low_price))
             self.assertTrue((Path(out)/'ranges_2025-09-22_2025-09-23.csv').exists())
+            state_path.unlink()
+            live.run('plan','/tmp/cache',out,offline=True,now='2025-09-23T10:00:00+08:00', bootstrap=True)
+            rebuilt = json.loads(state_path.read_text())
+            self.assertTrue(rebuilt['reconstructed_midweek'])
+            self.assertEqual(rebuilt['signal_bar'], '2025-09-21')
 
     def test_missing_weekly_plan_and_before_close_rejected(self):
         with tempfile.TemporaryDirectory() as out:

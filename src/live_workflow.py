@@ -82,14 +82,14 @@ def remaining_range(panel, clean, priors, features, leaders, latest, symbols, fr
     return result.drop(columns=['Close','lo','hi'])
 
 
-def run(command, data_dir, output_dir, capital=10000., offline=False, now=None, fee_bps=10., slippage_bps=5.):
+def run(command, data_dir, output_dir, capital=10000., offline=False, now=None, fee_bps=10., slippage_bps=5., bootstrap=False):
     t, monday, latest = clock(now)
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
     state_path = root / f'week_{monday:%Y-%m-%d}.json'
     state = json.loads(state_path.read_text()) if state_path.exists() else None
-    if command == 'plan' and state is None and t.dayofweek != 0:
-        raise ValueError('Create the frozen weekly plan on Monday; daily updates require that saved plan')
+    if command == 'plan' and state is None and t.dayofweek != 0 and not bootstrap:
+        raise ValueError('No saved Monday plan. To initialize midweek run: python main.py plan --bootstrap --capital 10000')
     if command == 'daily' and state is None:
         raise ValueError('No frozen plan for this week; run plan on Monday first')
     required = [p['Symbol'] for p in state['picks']] if state else []
@@ -113,6 +113,8 @@ def run(command, data_dir, output_dir, capital=10000., offline=False, now=None, 
         fields = ['Symbol','rank','market_prob','stance','pred_net_7d','target_weight']
         state = {'week_monday':str(monday.date()), 'signal_bar':str(sunday.date()),
                  'created_at':t.isoformat(), 'capital':capital, 'universe':sorted(frames),
+                 'reconstructed_midweek': t.dayofweek != 0,
+                 'universe_as_of': t.isoformat(),
                  'picks':picks[fields].to_dict('records')}
     picks = pd.DataFrame(state['picks'])
     bands = remaining_range(panel, clean, priors, features, leaders, latest,
@@ -122,6 +124,7 @@ def run(command, data_dir, output_dir, capital=10000., offline=False, now=None, 
     report['as_of_bar'] = latest
     report['week_monday'] = monday
     report['generated_at'] = t.isoformat()
+    report['reconstructed_midweek'] = state.get('reconstructed_midweek', False)
     if not offline:
         report = report.merge(plan_data.current_quotes(report.Symbol.tolist()), on='Symbol', validate='one_to_one')
     report['data_mode'] = 'offline_cache' if offline else 'binance_refreshed'
