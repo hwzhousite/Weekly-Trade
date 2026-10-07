@@ -25,9 +25,11 @@ class Settings:
     bear_exposure: float = .25
     neutral_exposure: float = .5
     min_history: int = 90
+    signal_weekday: int = 5
+    entry_delay: int = 2
 
 
-def prepare(frames, settings=Settings(), now=None):
+def prepare(frames, settings=Settings(), now=None, daily=False):
     """Saturday UTC bar -> Monday open -> next Monday open (seven calendar days).
 
     Full daily reindex is essential: shift(-2) means calendar days, not rows.
@@ -60,24 +62,26 @@ def prepare(frames, settings=Settings(), now=None):
     for symbol, d in clean.items():
         e = pd.DataFrame(index=d.index)
         e['eligible'] = (d['Close'].rolling(settings.min_history).count() == settings.min_history) & (d['QuoteVolume'].rolling(30).mean() > 0)
-        entry = d['Open'].shift(-2)
-        exit_price = d['Open'].shift(-9)
+        delay = settings.entry_delay
+        entry = d['Open'].shift(-delay)
+        exit_price = d['Open'].shift(-(delay + 7))
         e['label_return'] = exit_price / entry - 1
         # Daily funding rates are converted to entry-notional cash flows using
         # daily close as settlement-price proxy; intraday funding marks unavailable.
-        funding = sum(d['funding_daily'].shift(-k) * d['Close'].shift(-k) / entry for k in range(2, 9))
+        funding = sum(d['funding_daily'].shift(-k) * d['Close'].shift(-k) / entry for k in range(delay, delay + 7))
         e['label_net'] = e['label_return'] - funding
         # Whole Monday-Sunday trading range, relative to the observable signal close.
-        highs = pd.concat([d.High.shift(-k) for k in range(2, 9)], axis=1)
-        lows = pd.concat([d.Low.shift(-k) for k in range(2, 9)], axis=1)
+        highs = pd.concat([d.High.shift(-k) for k in range(delay, delay + 7)], axis=1)
+        lows = pd.concat([d.Low.shift(-k) for k in range(delay, delay + 7)], axis=1)
         e['label_high_7d'] = np.log(highs.max(axis=1).where(highs.count(axis=1) == 7) / d.Close)
         e['label_low_7d'] = np.log(lows.min(axis=1).where(lows.count(axis=1) == 7) / d.Close)
-        e['label_end'] = e.index + pd.Timedelta(days=9)
+        e['label_end'] = e.index + pd.Timedelta(days=delay + 7)
         e['Symbol'] = symbol
         e['Date'] = e.index
         extras.append(e.reset_index(drop=True))
     panel = panel.merge(pd.concat(extras), on=['Date', 'Symbol'], validate='one_to_one')
-    panel = panel.loc[panel.Date.dt.dayofweek == 5].copy()
+    if not daily:
+        panel = panel.loc[panel.Date.dt.dayofweek == settings.signal_weekday].copy()
     # Leader state features are entirely historical and deliberately low dimensional.
     states = []
     for symbol in LEADERS:
@@ -91,16 +95,22 @@ def prepare(frames, settings=Settings(), now=None):
         f[f'{symbol}_funding_7'] = d.funding_daily.rolling(7).sum()
         states.append(f)
     market = pd.concat(states, axis=1).replace([np.inf, -np.inf], np.nan)
+    # Whole downloaded market breadth, dispersion, trend and funding state.
+    aggregates = [c for c in feature_cols if c.startswith('mkt_')]
+    market = market.join(panel.groupby('Date')[aggregates].first())
     leader_cols = market.columns.tolist()
     market = market.dropna(subset=leader_cols)
-    market = market.loc[market.index.dayofweek == 5].copy()
+    market_daily = market.copy()
+    market = market.loc[market.index.dayofweek == settings.signal_weekday].copy()
     eligible = panel.loc[panel.eligible]
     # Freeze each date's eligible basket. Require a complete forward basket label.
     grouped = eligible.groupby('Date').label_return
     market['market_return'] = grouped.mean().where(grouped.count() == grouped.size())
-    market['label_end'] = market.index + pd.Timedelta(days=9)
+    market['label_end'] = market.index + pd.Timedelta(days=settings.entry_delay + 7)
     market['up'] = (market.market_return > 0).astype(float).where(market.market_return.notna())
-    panel = panel.merge(market[leader_cols], left_on='Date', right_index=True, how='inner')
+    # Aggregate columns already live in panel; only merge additional leader columns.
+    new_cols = [c for c in leader_cols if c not in panel]
+    panel = panel.merge((market_daily if daily else market)[new_cols], left_on='Date', right_index=True, how='inner')
     return panel.replace([np.inf, -np.inf], np.nan), market, feature_cols, leader_cols, clean
 
 
@@ -152,8 +162,8 @@ def score(panel, market, features, leader_cols, settings=Settings()):
             name = 'pred_net_7d' if conditional else 'baseline_pred_net_7d'
             current[name] = model.predict(current[cols])
         current['selection_train_end'] = train.label_end.max()
-        current['entry_date'] = date + pd.Timedelta(days=2)
-        current['exit_date'] = date + pd.Timedelta(days=9)
+        current['entry_date'] = date + pd.Timedelta(days=settings.entry_delay)
+        current['exit_date'] = date + pd.Timedelta(days=settings.entry_delay + 7)
         output.append(current)
     if not output:
         raise ValueError('Insufficient OOF market history for conditional selection; need roughly 54+ weeks after warmup')

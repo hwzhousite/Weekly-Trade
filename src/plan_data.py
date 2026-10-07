@@ -5,14 +5,14 @@ import binance_data
 from weekly import LEADERS
 
 
-def refresh_plan_frames(cache_dir, now=None):
+def refresh_plan_frames(cache_dir, now=None, required_symbols=()):
     universe = binance_data.top_perpetuals()
-    symbols = list(dict.fromkeys(universe.symbol.tolist() + list(LEADERS)))
+    symbols = list(dict.fromkeys(universe.symbol.tolist() + list(LEADERS) + list(required_symbols)))
     frames = binance_data.download_universe(symbols=symbols, cache_dir=cache_dir)
     now = pd.Timestamp.now(tz='UTC') if now is None else pd.Timestamp(now)
     expected = now.tz_convert('UTC').tz_localize(None).normalize() - pd.Timedelta(days=1)
     fresh = {s: d for s, d in frames.items() if pd.Timestamp(d.index.max()) == expected}
-    missing = set(LEADERS) - set(fresh)
+    missing = (set(LEADERS) | set(required_symbols)) - set(fresh)
     if missing:
         raise ValueError(f'Fresh leader history unavailable: {sorted(missing)}; no cached fallback')
     if len(fresh) < 5:

@@ -11,7 +11,7 @@ import binance_data
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('command', choices=['download', 'backtest', 'plan'])
+    p.add_argument('command', choices=['download', 'backtest', 'plan', 'daily'])
     p.add_argument('--data-dir', type=Path, default=ROOT / 'data' / 'binance')
     p.add_argument('--output-dir', type=Path, default=ROOT / 'output')
     p.add_argument('--capital', type=float, default=10000.)
@@ -32,6 +32,13 @@ def main():
         return
     import weekly
     import plan_data
+    if args.command in ('plan', 'daily') and not args.as_of:
+        from live_workflow import run
+        run(args.command, args.data_dir, args.output_dir, args.capital, args.offline,
+            fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
+        return
+    if args.command == 'daily':
+        p.error('daily uses this week frozen plan; --as-of is only for historical plan research')
     settings = weekly.Settings(fee_bps=args.fee_bps, slippage_bps=args.slippage_bps)
     now = None
     if args.as_of:
