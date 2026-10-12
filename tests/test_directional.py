@@ -2,6 +2,8 @@ import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
+import tempfile
 import json
 import numpy as np
 import pandas as pd
@@ -36,15 +38,6 @@ class DirectionalTests(unittest.TestCase):
         self.assertGreater(curve.equity.iloc[-1],1.7)
         self.assertTrue((curve.funding_cost.iloc[:-1]<0).all())
         self.assertTrue((curve.turnover.iloc[1:-1]==0).all())
-    def test_news_future_rejected_before_request(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/'news.json'
-            path.write_text(json.dumps([{'published_at':'2026-10-13T00:00Z','retrieved_at':'2026-10-13T00:00Z','url':'https://example.com','text':'news'}]))
-            with patch.dict('os.environ',{'OPENAI_API_KEY':'test','OPENAI_MODEL':'test'}):
-                with self.assertRaisesRegex(ValueError,'no later'):
-                    d.gpt_direction({},pd.Timestamp('2026-10-12T00:15Z'),path)
-
     def test_future_labels_do_not_change_prediction(self):
         from test_weekly import frames
         panel,market,features,leaders,_=weekly.prepare(frames(700),d.SETTINGS,now='2025-01-01')
@@ -58,3 +51,29 @@ class DirectionalTests(unittest.TestCase):
         changed_market.loc[future,'up']=1
         new,_=d.predict(changed,changed_market,features,leaders,date)
         pd.testing.assert_frame_equal(old[['Symbol','coin_up_prob','market_prob']],new[['Symbol','coin_up_prob','market_prob']])
+
+    def test_weekly_plan_quant_only_and_freeze(self):
+        for probability, stance in ((.8,'BULL'),(.2,'BEAR')):
+            with self.subTest(stance=stance), tempfile.TemporaryDirectory() as folder:
+                root=Path(folder)
+                args=SimpleNamespace(output_dir=root,data_dir=root,capital=10000,offline=True)
+                sunday=pd.Timestamp('2026-10-11')
+                market=pd.DataFrame({'state':[1.]},index=[sunday])
+                clean={'A':pd.DataFrame({'Close':[100.]},index=[sunday])}
+                current=pd.DataFrame({'Date':[sunday]*3,'entry_date':[sunday+pd.Timedelta(days=1)]*3,
+                    'exit_date':[sunday+pd.Timedelta(days=8)]*3,'Symbol':list('ABC'),
+                    'market_prob':[probability]*3,'coin_up_prob':[.9,.7,.6],
+                    'coin_down_prob':[.1,.3,.4],'selection_train_end':[sunday]*3})
+                with patch.object(d.binance_data,'load_universe',return_value={}) as load, \
+                     patch.object(d.weekly,'prepare',return_value=(None,market,[],['state'],clean)), \
+                     patch.object(d,'predict',return_value=(current,pd.DataFrame({'selected':[True]}))), \
+                     patch('urllib.request.urlopen',side_effect=AssertionError('Unexpected API call')):
+                    report=d.run(args,now='2026-10-12T10:00:00+08:00')
+                    self.assertTrue((report.stance==stance).all())
+                    self.assertTrue((report.market_source=='quant').all())
+                    self.assertEqual(load.call_count,1)
+                    repeated=d.run(args,now='2026-10-13T10:00:00+08:00')
+                    self.assertEqual(load.call_count,1)
+                    self.assertEqual(report.Symbol.tolist(),repeated.Symbol.tolist())
+                    state=json.loads((root/'direction_week_2026-10-12.json').read_text())
+                    self.assertEqual(state['judgement']['source'],'quant')

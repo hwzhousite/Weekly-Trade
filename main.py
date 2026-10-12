@@ -16,8 +16,6 @@ def main():
     p.add_argument('--output-dir', type=Path, default=ROOT/'output')
     p.add_argument('--capital', type=float, default=10000.)
     p.add_argument('--offline', action='store_true')
-    p.add_argument('--market-source', choices=['gpt','quant'], default='gpt')
-    p.add_argument('--news-file', type=Path, help='Optional archived timestamped news JSON')
     p.add_argument('--start'); p.add_argument('--end')
     p.add_argument('--symbols', nargs='+')
     p.add_argument('--universe-size', type=int, default=50)
@@ -54,7 +52,7 @@ def main():
     pd.concat(audits).to_csv(args.output_dir/'factor_ic_history.csv', index=False)
     curve = weekly.simulate(predictions, clean, directional.SETTINGS, mode='directional')
     curve.to_csv(args.output_dir/'backtest_directional_quant.csv', index=False)
-    metrics = {'market_source':'quant_only_no_historical_gpt', **weekly.summary(curve)}
+    metrics = {'market_source':'quant', **weekly.summary(curve)}
     (args.output_dir/'metrics.json').write_text(json.dumps(metrics, indent=2))
     print(json.dumps(metrics, indent=2))
 
