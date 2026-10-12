@@ -186,7 +186,7 @@ def allocation(grp, settings=Settings(), mode='conditional'):
 def simulate(predictions, frames, settings=Settings(), mode='conditional'):
     """Linear USDT perp cash ledger, fixed quantities between Monday opens."""
     fee_rate = (settings.fee_bps + settings.slippage_bps) / 1e4
-    plans = {pd.Timestamp(d) + pd.Timedelta(days=2): allocation(g, settings, mode)
+    plans = {pd.Timestamp(d) + pd.Timedelta(days=settings.entry_delay): (g if mode == 'directional' else allocation(g, settings, mode))
              for d, g in predictions.groupby('Date')}
     start = min(plans)
     # Need the exit Monday Open; do not backtest incompletely observed weeks.
@@ -215,10 +215,10 @@ def simulate(predictions, frames, settings=Settings(), mode='conditional'):
         if date in complete or date == stop:
             plan = complete.get(date)
             weights = {} if plan is None else dict(zip(plan.Symbol, plan.target_weight))
-            px = prices(date, 'Open', set(quantities) | {s for s, w in weights.items() if w > 0})
+            px = prices(date, 'Open', set(quantities) | {s for s, w in weights.items() if w != 0})
             # Reserve fees while keeping gross exposure <= available equity.
             budget = cash / (1 + 2 * fee_rate)
-            desired = {s: budget * w / px[s] for s, w in weights.items() if w > 0}
+            desired = {s: budget * w / px[s] for s, w in weights.items() if w != 0}
             turnover = sum(abs(desired.get(s, 0) - quantities.get(s, 0)) * px[s] for s in px)
             cost = turnover * fee_rate
             cash -= cost
