@@ -53,3 +53,13 @@ bash download.sh --symbols BTCUSDT ETHUSDT SOLUSDT ADAUSDT XRPUSDT BNBUSDT
 ```
 
 The command is manual; set your own Monday schedule to run it automatically. Trade execution remains manual.
+
+## Independent two-model and factor analysis
+
+Use the separate [backtest/](backtest/README.md) workflow for market-classification diagnostics, direction-aware coin-ranking metrics, three portfolio comparisons, and training/OOS factor analysis:
+
+```bash
+python backtest/run.py --start 2025-01-06 --end 2026-10-05
+```
+
+Results default to `backtest/output/`, separate from live plan state. Full details and output definitions are in `backtest/README.md`.
